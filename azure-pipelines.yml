@@ -662,9 +662,6 @@ jobs:
     inputs:
       targetType: 'filePath'
       filePath: scripts/release/rpm/pipeline.sh
-    env:
-      IMAGE: $(image)
-      TAG: $(tag)
   - task: AzureArtifacts.manifest-generator-task.manifest-generator-task.ManifestGeneratorTask@0
     displayName: 'SBOM'
     inputs:
@@ -720,13 +717,11 @@ jobs:
       TargetPath: '$(Build.ArtifactStagingDirectory)/metadata'
       artifactName: metadata
 
-
   - task: DownloadPipelineArtifact@1
     displayName: 'Download Build Artifacts'
     inputs:
       TargetPath: '$(Build.ArtifactStagingDirectory)/rpm'
       artifactName: $(artifact)
-
 
   - bash: |
       set -ex

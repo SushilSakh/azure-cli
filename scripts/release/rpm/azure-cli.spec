@@ -27,7 +27,6 @@ Name:           %{name}
 Version:        %{version}
 Release:        %{release}
 Url:            https://docs.microsoft.com/cli/azure/install-azure-cli
-BuildArch:      x86_64
 Requires:       %{python_package}
 Prefix:         /usr
 Prefix:         /etc
@@ -52,7 +51,7 @@ A great cloud needs great tools; we're excited to introduce Azure CLI,
 # Create a fully instantiated virtual environment, ready to use the CLI.
 %{python_cmd} -m venv %{buildroot}%{cli_lib_dir}
 source %{buildroot}%{cli_lib_dir}/bin/activate
-%{python_cmd} -m pip install --upgrade pip
+%{python_cmd} -m pip install --upgrade pip wheel
 source %{repo_path}/scripts/install_full.sh
 
 # cffi 1.15.0 doesn't work with RPM: https://foss.heptapod.net/pypy/cffi/-/issues/513

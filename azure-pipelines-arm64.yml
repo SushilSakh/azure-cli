@@ -1,0 +1,177 @@
+resources:
+- repo: self
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - '*'
+
+jobs:
+- job: BuildRpmPackageMariner
+  displayName: Build Rpm Package Mariner ARM64
+  condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'Manual', 'Schedule'))
+  pool:
+    name: 'ubuntu-arm64-2004-pool'
+    vmImage: 'ubuntu-20.04'
+  variables:
+    skipComponentGovernanceDetection: true
+  strategy:
+    matrix:
+      1.0:
+        image: cblmariner.azurecr.io/base/core
+        tag: 1.0
+      2.0:
+        image: mcr.microsoft.com/cbl-mariner/base/core
+        tag: 2.0
+  steps:
+  - bash: |
+      # https://docs.docker.com/engine/security/rootless/
+      /bin/bash -c "$(curl -fsSL https://get.docker.com)"
+      sudo apt-get install -y uidmap
+      dockerd-rootless-setuptool.sh install
+      export XDG_RUNTIME_DIR=/home/cloudtest/.docker/run
+      PATH=/usr/bin:/sbin:/usr/sbin:$PATH dockerd-rootless.sh &
+      sleep 10
+      docker context use rootless
+    displayName: Install Docker
+  - task: Bash@3
+    displayName: 'Build Rpm Package: Mariner'
+    inputs:
+      targetType: 'filePath'
+      filePath: scripts/release/rpm/pipeline_mariner.sh
+    env:
+      IMAGE: $(image)
+      TAG: $(tag)
+
+  - task: AzureArtifacts.manifest-generator-task.manifest-generator-task.ManifestGeneratorTask@0
+    displayName: 'SBOM'
+    inputs:
+      BuildDropPath: $(Build.ArtifactStagingDirectory)
+
+  - task: PublishPipelineArtifact@0
+    displayName: 'Publish Artifact: rpm-mariner'
+    inputs:
+      TargetPath: $(Build.ArtifactStagingDirectory)
+      ArtifactName: rpm-mariner$(tag)
+
+# TODO: rpmbuild on Red Hat UBI 8 is slow for unknown reason. Still working with Red Hat to investigate.
+- job: BuildRpmPackages
+  displayName: Build Rpm Packages ARM64
+  # Do not run this job for Pull Requests due to the slowness
+  condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'Manual', 'Schedule'))
+  pool:
+    name: 'ubuntu-arm64-2004-pool'
+    vmImage: 'ubuntu-20.04'
+  variables:
+    skipComponentGovernanceDetection: true
+  strategy:
+    matrix:
+      Red Hat Universal Base Image 8:
+        dockerfile: ubi
+        image: registry.access.redhat.com/ubi8/ubi:8.4
+        artifact: rpm-ubi8
+        python_package: python39
+      Red Hat Universal Base Image 9:
+        dockerfile: ubi
+        image: registry.access.redhat.com/ubi9/ubi:9.0.0
+        artifact: rpm-ubi9
+        python_package: python3.9
+      Fedora35:
+        dockerfile: fedora
+        image: fedora:35
+        artifact: rpm-fedora35
+        python_package: python3
+      Fedora36:
+        dockerfile: fedora
+        image: fedora:36
+        artifact: rpm-fedora36
+        python_package: python3
+  steps:
+  - bash: |
+      # https://docs.docker.com/engine/security/rootless/
+      /bin/bash -c "$(curl -fsSL https://get.docker.com)"
+      sudo apt-get install -y uidmap
+      dockerd-rootless-setuptool.sh install
+      export XDG_RUNTIME_DIR=/home/cloudtest/.docker/run
+      PATH=/usr/bin:/sbin:/usr/sbin:$PATH dockerd-rootless.sh &
+      sleep 10
+      docker context use rootless
+    displayName: Install Docker
+  - task: Bash@3
+    displayName: 'Build Rpm Package'
+    inputs:
+      targetType: 'filePath'
+      filePath: scripts/release/rpm/pipeline.sh
+  - task: AzureArtifacts.manifest-generator-task.manifest-generator-task.ManifestGeneratorTask@0
+    displayName: 'SBOM'
+    inputs:
+      BuildDropPath: $(Build.ArtifactStagingDirectory)
+  - task: PublishPipelineArtifact@0
+    displayName: 'Publish Artifact: rpm'
+    inputs:
+      TargetPath: $(Build.ArtifactStagingDirectory)
+      ArtifactName: $(artifact)
+
+
+- job: TestRpmPackage
+  displayName: Test Rpm Package
+  timeoutInMinutes: 120
+  dependsOn: BuildRpmPackages
+  condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI', 'Manual', 'Schedule'))
+  pool:
+    vmImage: 'ubuntu-20.04'
+  strategy:
+    matrix:
+      Red Hat Universal Base Image 8:
+        artifact: rpm-ubi8
+        distro: el8
+        image: registry.access.redhat.com/ubi8/ubi:8.4
+        python_package: python39
+        python_cmd: python3.9
+        pip_cmd: pip3.9
+      Red Hat Universal Base Image 9:
+        artifact: rpm-ubi9
+        distro: el9
+        image: registry.access.redhat.com/ubi9/ubi:9.0.0
+        python_package: python3.9
+        python_cmd: python3.9
+        pip_cmd: pip3.9
+      Fedora35:
+        artifact: rpm-fedora35
+        distro: fc35
+        image: fedora:35
+        python_package: python3
+        python_cmd: python3
+        pip_cmd: pip3
+      Fedora36:
+        artifact: rpm-fedora36
+        distro: fc36
+        image: fedora:36
+        python_package: python3
+        python_cmd: python3
+        pip_cmd: pip3
+  steps:
+  - task: DownloadPipelineArtifact@1
+    displayName: 'Download Metadata'
+    inputs:
+      TargetPath: '$(Build.ArtifactStagingDirectory)/metadata'
+      artifactName: metadata
+
+  - task: DownloadPipelineArtifact@1
+    displayName: 'Download Build Artifacts'
+    inputs:
+      TargetPath: '$(Build.ArtifactStagingDirectory)/rpm'
+      artifactName: $(artifact)
+
+  - bash: |
+      set -ex
+      
+      CLI_VERSION=`cat $SYSTEM_ARTIFACTSDIRECTORY/metadata/version`
+      RPM_NAME=$(ls $SYSTEM_ARTIFACTSDIRECTORY/rpm/azure-cli-$CLI_VERSION-1.${DISTRO}.*.rpm)
+      
+      echo "== Test rpm package on ${IMAGE} =="
+      docker pull $IMAGE
+      docker run --rm -e RPM_NAME=$RPM_NAME -e PYTHON_PACKAGE=${PYTHON_PACKAGE} -e PYTHON_CMD=${PYTHON_CMD} -e PIP_CMD=${PIP_CMD} -v $SYSTEM_ARTIFACTSDIRECTORY/rpm:/mnt/rpm -v $(pwd):/azure-cli $IMAGE /bin/bash "/azure-cli/scripts/release/rpm/test_rpm_in_docker.sh"
+
+    displayName: 'Test Rpm Package'
